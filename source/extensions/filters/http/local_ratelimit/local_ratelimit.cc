@@ -10,6 +10,7 @@
 
 #include "source/common/http/utility.h"
 #include "source/common/router/config_impl.h"
+#include "source/common/websocket/codec.h"
 #include "source/extensions/filters/http/common/ratelimit_headers.h"
 
 namespace Envoy {
@@ -155,6 +156,48 @@ Http::FilterHeadersStatus Filter::decodeHeaders(Http::RequestHeaderMap& headers,
   decoder_callbacks_->streamInfo().setResponseFlag(StreamInfo::ResponseFlag::RateLimited);
 
   return Http::FilterHeadersStatus::StopIteration;
+}
+
+Http::FilterDataStatus Filter::decodeData(Buffer::Instance& data, bool) {
+  // decode the data buffer to frames
+  absl::optional<std::vector<WebSocket::Frame>> frames = decoder_.decode(data);
+  
+  // drain the data buffer
+  data.drain(data.length());
+
+  if (frames.has_value()) {
+    // iterate over frames and encode them back to data buffer
+    for (const auto& frame : frames.value()) {
+      std::vector<RateLimit::LocalDescriptor> descriptors;
+      if (frame.opcode_ == WebSocket::kFrameOpcodeText ||
+          frame.opcode_ == WebSocket::kFrameOpcodeBinary ||
+          frame.opcode_ == WebSocket::kFrameOpcodeContinuation) {
+        if (!requestAllowed(descriptors)) {
+          ENVOY_LOG(debug, "data can NOT proceed");
+          // ingore the data frame
+          continue;
+        } else {
+          ENVOY_LOG(debug, "data can proceed");
+        }
+      }
+
+      // encode the frame back to data buffer
+      absl::optional<std::vector<uint8_t>> encoded_frame_header = encoder_.encodeFrameHeader(frame);
+      if (encoded_frame_header.has_value()) {
+        data.add(encoded_frame_header->data(), encoded_frame_header->size());
+        // add frame payload to data buffer
+        if (frame.payload_ != nullptr) {
+          data.add(*frame.payload_);
+        }
+      }
+    }
+  }
+
+  return Http::FilterDataStatus::Continue;
+}
+
+Http::FilterDataStatus Filter::encodeData(Buffer::Instance&, bool) {
+  return Http::FilterDataStatus::Continue;
 }
 
 Http::FilterHeadersStatus Filter::encodeHeaders(Http::ResponseHeaderMap& headers, bool) {

@@ -17,6 +17,7 @@
 #include "source/common/http/header_map_impl.h"
 #include "source/common/router/header_parser.h"
 #include "source/common/runtime/runtime_protos.h"
+#include "source/common/websocket/codec.h"
 #include "source/extensions/filters/common/local_ratelimit/local_ratelimit_impl.h"
 #include "source/extensions/filters/common/ratelimit/ratelimit.h"
 #include "source/extensions/filters/http/common/pass_through_filter.h"
@@ -161,15 +162,22 @@ using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;
  */
 class Filter : public Http::PassThroughFilter, Logger::Loggable<Logger::Id::filter> {
 public:
-  Filter(FilterConfigSharedPtr config) : config_(config) {}
+  Filter(FilterConfigSharedPtr config)
+      : config_(config), decoder_(WebSocket::kMaxPayloadBufferLength), encoder_() {}
 
   // Http::StreamDecoderFilter
   Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers,
                                           bool end_stream) override;
 
+  // Http::StreamDecoderFilter
+  Http::FilterDataStatus decodeData(Buffer::Instance& data, bool end_stream) override;
+
   // Http::StreamEncoderFilter
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers,
                                           bool end_stream) override;
+
+  // Http::StreamEncoderFilter
+  Http::FilterDataStatus encodeData(Buffer::Instance& data, bool end_stream) override;
 
 private:
   friend class FilterTest;
@@ -191,6 +199,8 @@ private:
 
   absl::optional<std::vector<RateLimit::LocalDescriptor>> stored_descriptors_;
   VhRateLimitOptions vh_rate_limits_;
+  WebSocket::Decoder decoder_;
+  WebSocket::Encoder encoder_;
 };
 
 } // namespace LocalRateLimitFilter
