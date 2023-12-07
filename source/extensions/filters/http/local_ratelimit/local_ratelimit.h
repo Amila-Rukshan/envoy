@@ -54,8 +54,10 @@ public:
       const std::chrono::milliseconds& fill_interval, uint32_t max_tokens, uint32_t tokens_per_fill,
       Envoy::Event::Dispatcher& dispatcher,
       const Protobuf::RepeatedPtrField<
-          envoy::extensions::common::ratelimit::v3::LocalRateLimitDescriptor>& descriptor)
-      : rate_limiter_(fill_interval, max_tokens, tokens_per_fill, dispatcher, descriptor) {}
+          envoy::extensions::common::ratelimit::v3::LocalRateLimitDescriptor>& descriptor,
+      bool always_consume_default_token_bucket)
+      : rate_limiter_(fill_interval, max_tokens, tokens_per_fill, dispatcher, descriptor,
+                      always_consume_default_token_bucket) {}
   static const std::string& key();
   const Filters::Common::LocalRateLimit::LocalRateLimiterImpl& value() const {
     return rate_limiter_;
@@ -109,6 +111,10 @@ public:
   envoy::extensions::common::ratelimit::v3::VhRateLimitsOptions virtualHostRateLimits() const {
     return vh_rate_limits_;
   }
+  bool consumeDefaultTokenBucket() const { return always_consume_default_token_bucket_; }
+  const absl::optional<Grpc::Status::GrpcStatus> rateLimitedGrpcStatus() const {
+    return rate_limited_grpc_status_;
+  }
 
 private:
   friend class FilterTest;
@@ -133,6 +139,7 @@ private:
       envoy::extensions::common::ratelimit::v3::LocalRateLimitDescriptor>
       descriptors_;
   const bool rate_limit_per_connection_;
+  const bool always_consume_default_token_bucket_{};
   std::unique_ptr<Filters::Common::LocalRateLimit::LocalRateLimiterImpl> rate_limiter_;
   const LocalInfo::LocalInfo& local_info_;
   Runtime::Loader& runtime_;
@@ -144,6 +151,7 @@ private:
   const bool has_descriptors_;
   const bool enable_x_rate_limit_headers_;
   const envoy::extensions::common::ratelimit::v3::VhRateLimitsOptions vh_rate_limits_;
+  const absl::optional<Grpc::Status::GrpcStatus> rate_limited_grpc_status_;
 };
 
 using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;

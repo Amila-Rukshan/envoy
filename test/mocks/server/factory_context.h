@@ -21,7 +21,7 @@ public:
   MockFactoryContext();
   ~MockFactoryContext() override;
 
-  MOCK_METHOD(ServerFactoryContext&, getServerFactoryContext, (), (const));
+  MOCK_METHOD(ServerFactoryContext&, serverFactoryContext, (), (const));
   MOCK_METHOD(TransportSocketFactoryContext&, getTransportSocketFactoryContext, (), (const));
   MOCK_METHOD(AccessLog::AccessLogManager&, accessLogManager, ());
   MOCK_METHOD(Upstream::ClusterManager&, clusterManager, ());
@@ -39,14 +39,9 @@ public:
   MOCK_METHOD(ThreadLocal::Instance&, threadLocal, ());
   MOCK_METHOD(OptRef<Server::Admin>, admin, ());
   MOCK_METHOD(Stats::Scope&, listenerScope, ());
-  MOCK_METHOD(bool, isQuicListener, (), (const));
   MOCK_METHOD(const LocalInfo::LocalInfo&, localInfo, (), (const));
-  MOCK_METHOD(const envoy::config::core::v3::Metadata&, listenerMetadata, (), (const));
-  MOCK_METHOD(const Envoy::Config::TypedMetadata&, listenerTypedMetadata, (), (const));
-  MOCK_METHOD(envoy::config::core::v3::TrafficDirection, direction, (), (const));
+  MOCK_METHOD(const Network::ListenerInfo&, listenerInfo, (), (const));
   MOCK_METHOD(TimeSource&, timeSource, ());
-
-  MOCK_METHOD(const Network::ListenerConfig&, listenerConfig, (), (const));
 
   Event::TestTimeSystem& timeSystem() { return time_system_; }
   Grpc::Context& grpcContext() override { return grpc_context_; }
@@ -84,11 +79,11 @@ public:
   testing::NiceMock<Api::MockApi> api_;
 };
 
-class MockUpstreamHttpFactoryContext : public UpstreamHttpFactoryContext {
+class MockUpstreamFactoryContext : public UpstreamFactoryContext {
 public:
-  MockUpstreamHttpFactoryContext();
+  MockUpstreamFactoryContext();
 
-  MOCK_METHOD(ServerFactoryContext&, getServerFactoryContext, (), (const));
+  MOCK_METHOD(ServerFactoryContext&, serverFactoryContext, (), (const));
   MOCK_METHOD(Init::Manager&, initManager, ());
   MOCK_METHOD(Stats::Scope&, scope, ());
   testing::NiceMock<Init::MockManager> init_manager_;
