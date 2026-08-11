@@ -11,8 +11,10 @@
 #include "envoy/extensions/filters/http/local_ratelimit/v3/local_rate_limit.pb.h"
 #include "envoy/http/codes.h"
 
+#include "source/common/buffer/buffer_impl.h"
 #include "source/common/http/utility.h"
 #include "source/common/router/config_impl.h"
+#include "source/common/websocket/codec.h"
 #include "source/extensions/filters/http/common/ratelimit_headers.h"
 
 #include "absl/strings/str_cat.h"
@@ -234,6 +236,85 @@ Http::FilterHeadersStatus Filter::decodeHeaders(Http::RequestHeaderMap& headers,
   return Http::FilterHeadersStatus::StopIteration;
 }
 
+Http::FilterDataStatus Filter::decodeData(Buffer::Instance& data, bool) {
+  // decode the data buffer to frames
+  absl::optional<std::vector<WebSocket::Frame>> frames = decoder_.decode(data);
+
+  // drain the data buffer
+  data.drain(data.length());
+
+  if (frames.has_value()) {
+    // Build a descriptor keyed on the downstream TCP connection's unique id so that each
+    // WebSocket connection is rate limited against its own bucket rather than sharing the
+    // single default token bucket across every connection. The connection id does not change
+    // across frames, so this is computed once per decodeData() call.
+    std::vector<RateLimit::Descriptor> descriptors;
+    if (const auto connection = decoder_callbacks_->connection(); connection.has_value()) {
+      RateLimit::Descriptor connection_descriptor;
+      connection_descriptor.entries_.push_back({"connection_id", absl::StrCat(connection->id())});
+      descriptors.push_back(std::move(connection_descriptor));
+    }
+
+    // iterate over frames and encode them back to data buffer
+    for (const auto& frame : frames.value()) {
+      if (frame.opcode_ == WebSocket::kFrameOpcodeText ||
+          frame.opcode_ == WebSocket::kFrameOpcodeBinary ||
+          frame.opcode_ == WebSocket::kFrameOpcodeContinuation) {
+        if (!requestAllowed(descriptors).allowed) {
+          ENVOY_LOG(debug, "WebSocket message rate limit exceeded, notifying downstream client");
+          // Drop the frame instead of forwarding it upstream, and let the downstream client
+          // know via a WebSocket text frame sent directly back on the same connection.
+          sendRateLimitedWebSocketFrame();
+          continue;
+        } else {
+          ENVOY_LOG(debug, "data can proceed");
+        }
+      }
+
+      // encode the frame back to data buffer
+      absl::optional<std::vector<uint8_t>> encoded_frame_header = encoder_.encodeFrameHeader(frame);
+      if (encoded_frame_header.has_value()) {
+        data.add(encoded_frame_header->data(), encoded_frame_header->size());
+        // add frame payload to data buffer
+        if (frame.payload_ != nullptr) {
+          data.add(*frame.payload_);
+        }
+      }
+    }
+  }
+
+  return Http::FilterDataStatus::Continue;
+}
+
+void Filter::sendRateLimitedWebSocketFrame() {
+  static constexpr absl::string_view kRateLimitedMessage = "{ 'error': 'message not allowed' }";
+
+  WebSocket::Frame reply_frame;
+  reply_frame.final_fragment_ = true;
+  reply_frame.opcode_ = WebSocket::kFrameOpcodeText;
+  // Frames sent from the server to the client must not be masked.
+  reply_frame.masking_key_ = std::nullopt;
+  reply_frame.payload_length_ = kRateLimitedMessage.size();
+  reply_frame.payload_ =
+      std::make_unique<Buffer::OwnedImpl>(kRateLimitedMessage.data(), kRateLimitedMessage.size());
+
+  absl::optional<std::vector<uint8_t>> encoded_frame_header = encoder_.encodeFrameHeader(reply_frame);
+  if (!encoded_frame_header.has_value()) {
+    return;
+  }
+
+  Buffer::OwnedImpl reply_buffer;
+  reply_buffer.add(encoded_frame_header->data(), encoded_frame_header->size());
+  reply_buffer.add(*reply_frame.payload_);
+
+  // Send the frame directly to the downstream client on the encode path, bypassing upstream.
+  decoder_callbacks_->encodeData(reply_buffer, false);
+}
+
+Http::FilterDataStatus Filter::encodeData(Buffer::Instance&, bool) {
+  return Http::FilterDataStatus::Continue;
+}
+
 Http::FilterHeadersStatus Filter::encodeHeaders(Http::ResponseHeaderMap& headers, bool) {
   // We can never assume the decodeHeaders() was called before encodeHeaders().
   if (!token_bucket_context_) {
@@ -274,6 +355,9 @@ Filters::Common::LocalRateLimit::LocalRateLimiterImpl& Filter::getPerConnectionR
         used_config_->fillInterval(), used_config_->maxTokens(), used_config_->tokensPerFill(),
         used_config_->maxDynamicDescriptors(), decoder_callbacks_->dispatcher(),
         used_config_->descriptors(), used_config_->consumeDefaultTokenBucket());
+
+    ENVOY_LOG(info, "Creating per-connection WebSocket rate limiter: limiter={}",
+              static_cast<const void*>(&limiter->value()));
 
     decoder_callbacks_->streamInfo().filterState()->setData(
         PerConnectionRateLimiter::key(), limiter, StreamInfo::FilterState::LifeSpan::Connection);

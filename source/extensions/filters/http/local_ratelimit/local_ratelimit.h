@@ -17,6 +17,7 @@
 #include "source/common/http/header_map_impl.h"
 #include "source/common/router/header_parser.h"
 #include "source/common/runtime/runtime_protos.h"
+#include "source/common/websocket/codec.h"
 #include "source/extensions/filters/common/local_ratelimit/local_ratelimit_impl.h"
 #include "source/extensions/filters/common/ratelimit/ratelimit.h"
 #include "source/extensions/filters/common/ratelimit_config/ratelimit_config.h"
@@ -179,16 +180,23 @@ using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;
  */
 class Filter : public Http::PassThroughFilter, Logger::Loggable<Logger::Id::filter> {
 public:
-  Filter(FilterConfigSharedPtr config) : config_(config), used_config_(config_.get()) {}
+  Filter(FilterConfigSharedPtr config)
+      : config_(config), used_config_(config_.get()), decoder_(WebSocket::kMaxPayloadBufferLength),
+        encoder_() {}
 
   // Http::StreamDecoderFilter
   Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers,
                                           bool end_stream) override;
+  // Http::StreamDecoderFilter
+  Http::FilterDataStatus decodeData(Buffer::Instance& data, bool end_stream) override;
 
   // Http::StreamEncoderFilter
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers,
                                           bool end_stream) override;
-
+  
+  // Http::StreamEncoderFilter
+  Http::FilterDataStatus encodeData(Buffer::Instance& data, bool end_stream) override;
+                                
 private:
   friend class FilterTest;
 
@@ -201,6 +209,9 @@ private:
   Filters::Common::LocalRateLimit::LocalRateLimiterImpl& getPerConnectionRateLimiter();
   Filters::Common::LocalRateLimit::LocalRateLimiter::Result
   requestAllowed(absl::Span<const RateLimit::Descriptor> request_descriptors);
+  // Sends a WebSocket text frame directly to the downstream client (bypassing upstream)
+  // informing it that a message was dropped due to rate limiting.
+  void sendRateLimitedWebSocketFrame();
   bool enableXRateLimitHeaders() const {
     if (x_ratelimit_option_ ==
         RateLimit::XRateLimitOption::RateLimit_XRateLimitOption_UNSPECIFIED) {
@@ -218,6 +229,8 @@ private:
   RateLimit::XRateLimitOption x_ratelimit_option_{};
 
   VhRateLimitOptions vh_rate_limits_;
+  WebSocket::Decoder decoder_;
+  WebSocket::Encoder encoder_;
 };
 
 } // namespace LocalRateLimitFilter
